@@ -1,0 +1,234 @@
+---
+title: "Machine learning course project"
+author: "Yanshan Jin"
+date: "2024-07-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: 
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+ (see the section on the Weight Lifting Exercise Dataset).
+
+
+Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+The data for this project come from this source: 
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+
+```{r set working environment}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+```{r loading required packages and setting a seed}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(corrplot)
+library(rattle)
+library(randomForest)
+library(RColorBrewer)
+
+set.seed(222)
+```
+## Load data for analysis.
+```{r loading data}
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+data_train <- read.csv(url(url_train), strip.white = TRUE, na.strings = c("NA",""))
+data_test <- read.csv(url(url_test),strip.white = TRUE, na.strings = c("NA",""))
+
+dim(data_train)
+dim(data_test)
+```
+## Create two portions within the original training set.
+
+```{r split training set}
+in_train <- createDataPartition(data_train$classe, p = 0.75, list = FALSE)
+train_set <- data_train[in_train,]
+test_set <- data_train[-in_train,]
+
+dim(train_set)
+dim(test_set)
+
+# organizing training set and test set - 
+# removing near-zero-varience variables.
+nzv <- nearZeroVar(train_set)
+train_set <- train_set [,-nzv]
+test_set <- test_set[,-nzv]
+dim(train_set)
+
+# removing NAs
+na_var <- sapply(train_set, function(x) mean(is.na(x))) > 0.95
+train_set <- train_set[,na_var==FALSE]
+test_set <- test_set[,na_var==FALSE]
+
+dim(train_set)
+dim(test_set)
+
+# remove the identification variables.
+
+train_set <-  train_set[,-(1:5)]
+test_set <- test_set[,-(1:5)]
+
+dim(train_set)
+
+# transforming the vairbale that need to be predicted to a factor variable, when it is a integer.
+train_set$classe <- factor(train_set$classe)
+test_set$classe <- factor(test_set$classe)
+```
+
+the number of variables has been reduced from original 160 to 54.
+
+## Correlation analysis
+```{r correlation analysis}
+# Correlation analysis is performed to see the correlation of the variables. if they are highly correlated, then we need to perform PCA analysis to reduce data demension. If not, we go ahead and use the original data.
+
+corr_matrix <- cor(train_set[,-54])
+corrplot(corr_matrix, order = "FPC", method = "circle", type = "lower",
+         tl.cex = 0.6, tl.col = rgb(0,0,0))
+
+# since not many variables are highly correlated, we will not perform PCA analysis.
+```
+```{r, decision tree}
+set.seed(2222)
+train_control <- trainControl(method = "cv", number = 5) # 5-fold cross validation
+# train the decision tree model using 5-fold cross validation
+fit_decision_tree_cv <- train(classe ~.,data = train_set, method = "rpart",
+                              trControl = train_control)
+# print the results
+print(fit_decision_tree_cv)
+# plot the decision tree
+fancyRpartPlot(fit_decision_tree_cv$finalModel)
+
+```
+Prediction on the test_set.
+```{r, prediction on test_set}
+predict_decision_tree <- predict(fit_decision_tree_cv, newdata = test_set,type = "raw")
+conf_matrix_decision_tree <- confusionMatrix(predict_decision_tree,test_set$classe)
+conf_matrix_decision_tree
+```
+plot the accuracy of the decision tree model.
+```{r, plot the predictive accuracy}
+plot(conf_matrix_decision_tree$table,col = conf_matrix_decision_tree$byClass,
+     main = paste("Decision tree model: predictive accuracy = ", round(conf_matrix_decision_tree$overall['Accuracy'],4)))
+
+```
+Apply random forest model on the train_set.
+
+```{r, random forest model training}
+set.seed(2222)
+train_control <- trainControl(method = "cv", number = 5) # 5-fold cross validation
+# train the decision tree model using 5-fold cross validation
+fit_RF <- train(classe ~.,data = train_set, method = "rf",
+                              trControl = train_control)
+# print the model
+fit_RF$finalModel
+
+```
+
+```{r, predictions on the test_set}
+predict_RF <- predict(fit_RF,newdata = test_set)
+conf_matrix_RF <- confusionMatrix(predict_RF, test_set$classe)
+conf_matrix_RF
+```
+
+visualize the results of random forest prediction.However, the accuracy is too high and all curves overlaped together.
+```{r, ROC curve}
+library(pROC)
+# predict proabilities
+pred_prob <- predict(fit_RF, newdata = test_set, type = "prob")
+# create actural classes
+actual_classes <- test_set$classe
+# generate ROC curves for each classes
+roc_list <- lapply(levels(actual_classes), function(class){
+        roc(response = as.numeric(actual_classes == class),
+            predictor = pred_prob[,class],
+            levels = c(0,1),
+            direction = "<"
+            )
+})
+# plot ROC curves
+plot(roc_list[[1]],col = 1, main = "ROC curves for each class", print.auc = TRUE)
+sapply(2:length(roc_list),function(i) {
+        plot(roc_list[[i]], col = i, add = TRUE, print.auc = TRUE)
+})
+legend("bottomright", legend = levels(actual_classes), lwd = 2, col = 2:length(roc_list))
+
+```
+
+Apply generalized boosted model (GBM) to the train_set
+
+```{r, train GBM}
+set.seed(2222)
+train_control <- trainControl(method = "cv", number = 5) # 5-fold cross validation
+# train the decision tree model using 5-fold cross validation
+fit_GBM <- train(classe ~.,data = train_set, method = "gbm",
+                              trControl = train_control, verbose = FALSE)
+# print the model
+fit_GBM$finalModel
+
+```
+
+Predictions of GBM on test_set.
+```{r, GBM prediction}
+predict_GBM <- predict(fit_GBM, newdata = test_set)
+conf_matrix_GBM <- confusionMatrix(predict_GBM, test_set$classe)
+conf_matrix_GBM
+```
+
+Visualize the confusion matrix as heatmap
+```{r, heatmap}
+library(pheatmap)
+pheatmap(as.matrix(conf_matrix_GBM),
+         color = colorRampPalette(c("skyblue","orchid"))(100),
+         display_numbers = TRUE,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE)
+```
+
+Compare the efficiency of the 3 models in this analysis.
+```{r, model comparison}
+# store different models in a list
+models <- list(fit_decision_tree_cv,fit_RF, fit_GBM)
+model_names <- c("Decision tree", "Random forest", "GBM")
+accuracies <- sapply(models, function(model) confusionMatrix(predict(model, newdata = test_set), test_set$classe)$overall['Accuracy'])
+
+# Create a data frame for plotting
+accuracy_df <- data.frame(Model = model_names, Accuracy = accuracies)
+
+# Plot comparison
+ggplot(accuracy_df, aes(x = Model, y = Accuracy, fill = Model)) +
+  geom_bar(stat = "identity") +
+  xlab("Model") +
+  ylab("Accuracy") +
+  ggtitle("Model Comparison: Accuracy")+
+  scale_fill_brewer(name = waiver(), palette = "Set3",direction = 1)
+
+
+```
+
+Random forest has the highest accuracy.
+
+
